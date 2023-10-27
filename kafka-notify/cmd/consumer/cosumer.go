@@ -135,6 +135,7 @@ func handleNotifications(ctx *gin.Context, store *NotificationStore) {
 		return
 	}
 
+	fmt.Printf("user id: %s\n", userID)
 	notes, _ := store.Get(userID)
 	if len(notes) == 0 {
 		ctx.JSON(http.StatusNotFound, gin.H{

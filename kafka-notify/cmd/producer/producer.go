@@ -14,7 +14,7 @@ import (
 )
 
 const (
-	ProducerPort       = "8080"
+	ProducerPort       = ":8080"
 	KafkaServerAddress = "localhost:9092"
 	KafkaTopic         = "notifications"
 )
@@ -53,8 +53,9 @@ func sendKafkaMessage(producer sarama.SyncProducer, users []models.User, ctx *gi
 	}
 
 	notification := models.Notification{
-		From: fromUser,
-		To:   toUser,
+		From:    fromUser,
+		To:      toUser,
+		Message: ctx.PostForm("message"),
 	}
 
 	notificationJson, err := json.Marshal(notification)
@@ -67,8 +68,14 @@ func sendKafkaMessage(producer sarama.SyncProducer, users []models.User, ctx *gi
 		Value: sarama.StringEncoder(notificationJson),
 		Key:   sarama.StringEncoder(strconv.Itoa(toId)),
 	}
+	fmt.Println("should be sending message: ", msg)
 
-	_, _, err = producer.SendMessage(msg)
+	partition, offset, err := producer.SendMessage(msg)
+	if err != nil {
+		return fmt.Errorf("failed to send message: %w", err)
+	} else {
+		log.Printf("message sent: partition=%d, offset=%d, message=%s", partition, offset, notificationJson)
+	}
 	return err
 }
 
@@ -133,4 +140,8 @@ func main() {
 
 	fmt.Printf("Kafka PRODUCER 📨 started at http://localhost%s\n",
 		ProducerPort)
+
+	if err := router.Run(ProducerPort); err != nil {
+		log.Printf("failed to run the server: %v", err)
+	}
 }
