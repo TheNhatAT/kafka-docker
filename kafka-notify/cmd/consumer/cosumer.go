@@ -5,10 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"kafka-notify/pkg/models"
 	"log"
 	"net/http"
 	"sync"
+
+	"kafka-notify/pkg/models"
 
 	"github.com/IBM/sarama"
 	"github.com/gin-gonic/gin"
@@ -21,19 +22,18 @@ const (
 	KafkaServerAddress = "localhost:9092"
 )
 
-// helper functions
-var ErrNoMessageFound = errors.New("no message found")
+// ============== HELPER FUNCTIONS ==============
+var ErrNoMessagesFound = errors.New("no messages found")
 
-func getUserIdFromRequest(ctx *gin.Context) (string, error) {
+func getUserIDFromRequest(ctx *gin.Context) (string, error) {
 	userID := ctx.Param("userID")
 	if userID == "" {
-		return "", errors.New("no user id found in request")
+		return "", ErrNoMessagesFound
 	}
-
 	return userID, nil
 }
 
-// notification storage
+// ====== NOTIFICATION STORAGE ======
 type UserNotifications map[string][]models.Notification
 
 type NotificationStore struct {
@@ -45,41 +45,24 @@ func (ns *NotificationStore) Add(userID string,
 	notification models.Notification) {
 	ns.mu.Lock()
 	defer ns.mu.Unlock()
-
 	ns.data[userID] = append(ns.data[userID], notification)
 }
 
-func (ns *NotificationStore) Get(userID string) ([]models.Notification, error) {
+func (ns *NotificationStore) Get(userID string) []models.Notification {
 	ns.mu.RLock()
 	defer ns.mu.RUnlock()
-
-	notifications, ok := ns.data[userID]
-	if !ok {
-		return nil, ErrNoMessageFound
-	}
-
-	return notifications, nil
+	return ns.data[userID]
 }
 
-// kafka related functions
+// ============== KAFKA RELATED FUNCTIONS ==============
 type Consumer struct {
 	store *NotificationStore
 }
 
-func (*Consumer) Setup(sarama.ConsumerGroupSession) error {
-	return nil
-}
+func (*Consumer) Setup(sarama.ConsumerGroupSession) error   { return nil }
+func (*Consumer) Cleanup(sarama.ConsumerGroupSession) error { return nil }
 
-func (*Consumer) Cleanup(sarama.ConsumerGroupSession) error {
-	return nil
-}
-
-func (*Consumer) ConsumeClaim(sarama.ConsumerGroupSession,
-	sarama.ConsumerGroupClaim) error {
-	return nil
-}
-
-func (consumer *Consumer) ConsumerClaim(
+func (consumer *Consumer) ConsumeClaim(
 	sess sarama.ConsumerGroupSession, claim sarama.ConsumerGroupClaim) error {
 	for msg := range claim.Messages() {
 		userID := string(msg.Key)
@@ -97,30 +80,31 @@ func (consumer *Consumer) ConsumerClaim(
 
 func initializeConsumerGroup() (sarama.ConsumerGroup, error) {
 	config := sarama.NewConfig()
-	config.Consumer.Return.Errors = true
 
-	consumer, err := sarama.NewConsumerGroup([]string{KafkaServerAddress},
-		ConsumerGroup, config)
+	consumerGroup, err := sarama.NewConsumerGroup(
+		[]string{KafkaServerAddress}, ConsumerGroup, config)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to initialize consumer group: %w", err)
 	}
 
-	return consumer, nil
+	return consumerGroup, nil
 }
 
 func setupConsumerGroup(ctx context.Context, store *NotificationStore) {
 	consumerGroup, err := initializeConsumerGroup()
 	if err != nil {
-		log.Fatalf("failed to initialize consumer group: %v", err)
+		log.Printf("initialization error: %v", err)
 	}
 	defer consumerGroup.Close()
 
-	consumer := &Consumer{store: store}
+	consumer := &Consumer{
+		store: store,
+	}
 
 	for {
 		err = consumerGroup.Consume(ctx, []string{ConsumerTopic}, consumer)
 		if err != nil {
-			log.Printf("failed to consume: %v", err)
+			log.Printf("error from consumer: %v", err)
 		}
 		if ctx.Err() != nil {
 			return
@@ -129,25 +113,23 @@ func setupConsumerGroup(ctx context.Context, store *NotificationStore) {
 }
 
 func handleNotifications(ctx *gin.Context, store *NotificationStore) {
-	userID, err := getUserIdFromRequest(ctx)
+	userID, err := getUserIDFromRequest(ctx)
 	if err != nil {
-		ctx.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		ctx.JSON(http.StatusNotFound, gin.H{"message": err.Error()})
 		return
 	}
 
-	fmt.Printf("user id: %s\n", userID)
-	notes, _ := store.Get(userID)
+	notes := store.Get(userID)
 	if len(notes) == 0 {
-		ctx.JSON(http.StatusNotFound, gin.H{
-			"error":         "no notifications found for user",
-			"notifications": []models.Notification{},
-		})
+		ctx.JSON(http.StatusOK,
+			gin.H{
+				"message":       "No notifications found for user",
+				"notifications": []models.Notification{},
+			})
 		return
 	}
 
-	ctx.JSON(http.StatusOK, gin.H{
-		"notifications": notes,
-	})
+	ctx.JSON(http.StatusOK, gin.H{"notifications": notes})
 }
 
 func main() {
